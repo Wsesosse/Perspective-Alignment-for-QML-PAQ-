@@ -467,3 +467,236 @@ If the visible curve segment looks straight, flag `effectiveStraight=true` as a 
 8. For finite->infinity visual approximation, reference parallel direction must be computed from the same guides; a zero-angle result for one line alone is insufficient.
 
 **Implementation sequencing:** This is part of M1's projection/guide diagnostics. It must be added without weakening the single-plane homography constraints or assigning arbitrary VPs to independent UI vertices.
+
+
+---
+
+## Appendix B — **Concrete Qt Quick UI integration for V2 (mandatory implementation specification)**
+
+> Scope: this section expands Sections 3–6. It is a **plan**, not an implemented feature. Build a usable QML demo/workbench with the projection engine, and connect the same scene model to the live UI surface in later milestones. Do not confuse an editor's draggable handles with the geometry of the actual QML controls.
+
+### B1. There are TWO distinct UI layers
+
+1. **Perspective editor / workbench UI:** a development interface for creating and inspecting a scene: projection mode, camera/FOV, direction families, VP pairing, guide curves, anchors, crease/smooth deformation, transition and diagnostics.
+2. **PerspectiveSurface runtime component:** a reusable QML Item containing **ordinary live QML controls**. Its content is projected onto a zero-thickness sheet. It must not duplicate controls as mock rectangles or turn them into a 3D box.
+
+A workbench visualizes and edits the same underlying scene that the runtime component consumes. A demo slider or a drag handle should NEVER implement a second, unrelated warp algorithm.
+
+### B2. Editor layout and exact controls
+
+Recommended `PerspectiveWorkbench.qml` layout (adapt sizes, but preserve the logical regions):
+
+~~~text
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Projection: [Rectilinear|Fisheye 180|Spherical 360]  Preset: [1 2 3 4 5 6 N] │
+├───────────────────────────────┬───────────────────────────────────────────┤
+│ Families / Pairing            │ Perspective viewport                      │
+│  [+ Add direction family]     │  • REAL constructed VP markers            │
+│  A  d=(...) visible: finite   │  • derived opposite/hidden-partner labels │
+│     partner: B / out-of-FOV   │  • projected guide lines/curves           │
+│  B  d=(...) infinite direction│  • projected UI content surface           │
+│  [selected family details]   │  • anchors and crease path (editable)     │
+│  [auto pairing readout]      │  • pointer hover = probe values           │
+├───────────────────────────────┴───────────────────────────────────────────┤
+│ [show VPs] [show guides] [show source grid] [show diagnostics]             │
+│ Surface: [flat | planar | crease | smooth]  Transition: [0 … 1]            │
+│ Angle tolerance [rad]  Pixel tolerance [physical px]  DPR [read-only]     │
+│ Status: finite / effective∞ / mathematical∞ / out-of-FOV; residuals      │
+└───────────────────────────────────────────────────────────────────────────┘
+~~~
+
+**UI semantics:**
+- "1–6,N" are **named presets/fixtures** with their explicit projection shown. Selecting a preset loads its camera, directions and example object. It must NOT silently infer an arbitrary physics model from count alone. `N` means user-defined families; it is not an unlimited special projection type.
+- Projection selector changes the **projection model** explicitly; its forward/inverse functions are used by guides, VP markers and the surface together.
+- Selecting one family highlights **both its directional endpoints where applicable**, all member guides and the subscribed material edges/patches. If a partner lies behind the camera, show an **offscreen/behind** indicator, not a second fake onscreen VP.
+- Distinguish **finite, mathematical infinity, effective infinity and out-of-FOV/offscreen**. Mathematical infinity has no editable 2D location: render a directional arrow and label. Effective infinity retains the stored finite direction/VP and is only an approximation flag.
+- A draggable visible marker must call **inverse projection → update direction family → recompute antipode → rebuild guides → re-solve surface → rerender**. Never assign the raw screen XY marker position directly to an unrelated vertex-warp uniform.
+- In a model with singular inverse or unsupported drag geometry, disable the handle and explain why instead of fabricating a result.
+- If editing the visible point moves its opposite offscreen, the paired direction remains present in the registry.
+- The material grid and construction guides are **separate toggleable overlays**. Hiding the overlay must not change the geometry.
+- A family can subscribe to a named **patch/region**. The workbench must show which regions depend on the selected family; if multiple families are incompatible on one planar patch, mark THAT patch with an exact residual/reason.
+- Camera/viewport resizing and device-pixel-ratio changes trigger fresh effective-infinity diagnostics; the 0.1° + 0.5 physical-px pair of tolerances is configurable illustrative input, never a global distance cutoff.
+- Changing `transition` must animate the actual sheet geometry and its UV mapping; no merely decorative VP icon animation.
+- Default state should show an understandable **2-point sheet** with two finite perspective families, an infinite vertical family, a visible grid and a live Button/TextField. A 5-point preset should show four fisheye rim endpoints plus central forward VP and label the rear partner as outside the 180-degree FOV.
+
+### B3. Data flow: single authoritative state, no feedback loop
+
+~~~text
+Workbench controls / VP handle drag
+             │
+             ▼
+PerspectiveSceneController (camera, projection, direction families)
+             │
+             ├──► ProjectedVPs / antipodes / visibility / ∞ classification
+             │
+             ├──► ConstructionGuideEngine ──► GuideOverlay.qml
+             │
+             └──► SurfaceConstraintSolver ──► Material mesh S(u,v,t)
+                                                  │
+                                                  ▼
+                           Projection P(same model as guides) ──► screen vertices
+                                                  │
+                                                  ▼
+             original QML content ─► ShaderEffectSource (one texture)
+                                                  │
+                                                  ▼
+                 PerspectiveSurface renderer (one zero-thickness sheet)
+                                                  │
+screen pointer ─► inverse displayed mesh hit ─► source material UV
+                                                  │
+                                                  ▼
+                                     original QML interactive content
+~~~
+
+**Invariant:** guide overlay, VP labels, output vertex positions and hit testing must use one **versioned geometry snapshot** (same projection, frame parameters, mesh topology, UVs and transition) to avoid one-frame mismatches while dragging. UI handles/controls update the scene state; the derived snapshot drives everything. No computation should feed a rendered marker's rounded screen pixel coordinates back into geometry in a loop.
+
+**Update scheduling:** Batch simultaneous property changes and rebuild the snapshot once per logical update (or via Qt's ordinary polish/update stages); avoid independently reconstructing thousands of guide curves inside each QML `Repeater` delegate. Retain version/revision IDs so the overlay and rendered surface can be asserted consistent.
+
+### B4. Proposed runtime-facing QML API (design sketch; NOT yet runnable)
+
+~~~qml
+// Conceptual API. PerspectiveSceneController, PerspectiveGuideOverlay,
+// and these V2 properties must be implemented and registered first.
+PerspectiveSceneController {
+    id: scene
+    projection: "rectilinear"
+    fieldOfViewDegrees: 65
+    directionFamilies: [
+        { id: "hA", direction3D: [1, 0, 1] },
+        { id: "hB", direction3D: [-1, 0, 1] },
+        { id: "vertical", direction3D: [0, 1, 0] }
+    ]
+}
+PerspectiveSurface {
+    id: sheet
+    width: 440
+    height: 230
+    sceneController: scene
+    transition: 1
+    deformation: {
+        mode: "crease",
+        creaseU: 0.55,
+        foldAngleRadians: 0.4
+    }
+    subscriptions: [
+        { familyId: "hA", regionId: "left",  materialDirection: [1, 0] },
+        { familyId: "hB", regionId: "right", materialDirection: [1, 0] }
+    ]
+    Button { text: "Actual QML Button" }
+    TextField { width: 200; text: "Actual QML TextField" }
+}
+PerspectiveGuideOverlay {
+    sceneController: scene
+    targetSurface: sheet
+    showPairing: true
+    showGuides: true
+}
+~~~
+
+**Contract rules:**
+- Keep `PerspectiveSurface` as an ordinary reusable `Item` and preserve `default property alias content: sourceContent.data` (or an equally convenient documented Qt QML syntax). Do NOT force callers to rebuild Button/TextField in a custom HTML/Web/Canvas component.
+- `sceneController` is a **proposed QObject/QML type**, not a built-in Qt type. `deformation` must be given an actual QML-compatible property design (`property var` or explicit grouped QObject properties); the dotted object literal above is **illustrative pseudocode**, not valid directly as written in QML. Final examples must be compiled.
+- Projection coordinates, material UV coordinates and scene coordinates must be identified and converted explicitly. Use Qt `mapFromItem`/`mapToItem` only for **Qt's ordinary item transforms**; these APIs do **not** automatically invert arbitrary custom vertex-shader mesh warps.
+- Define concrete read-only properties `geometryValid`, `diagnostic`, `maxGuideResidualPx`, `maxAngularErrorRad`, `maxScreenErrorPhysicalPx`, `geometryRevision` and `inputMappingReady`. Preserve compatibility aliases for existing `mode` and `subscriptions` while migrating; warn or version explicit breaking changes.
+- All QML-exposed structures need explicit schema / units / defaults, validation and change notifications, including writable `familyId`, `direction3D`, `regionId`, `creaseU`, `foldAngleRadians` and tolerances. Direction arrays must be normalized or rejected when zero.
+- Support both an **editor** mode (`VP handles visible`) and **runtime** mode (`no editing chrome`), using the **same surface implementation**.
+
+### B5. Qt components and file responsibilities
+
+| File (proposed additions) | Role | First milestone |
+|---|---|---|
+| `ProjectionMath.js` or tested C++ equivalent | Coordinate frame, rectilinear/fisheye/spherical forward/inverse, clipping and ∞ | M1 |
+| `DirectionFamilies.js` | Family registry, opposite direction, pairing/visibility, finite/effective/true infinity | M1 |
+| `GuideConstruction.js` | Project **actual** 3D parallel lines into lines/curves; sample/clip | M1 |
+| `PerspectiveSceneController.qml` or registered C++ QObject | Authoritative writable scene state and derived snapshot | M1 |
+| `PerspectiveGuideOverlay.qml` | Render computed guides/VPs/partners; editing hit handles | M1 |
+| `PerspectiveWorkbench.qml` | Usable editor toolbar, viewport, family inspector, diagnostics | M1 |
+| `SurfaceModelV2.js` / C++ geometry code | Anchors, pose, surface patches, folds and smooth material surface | M2–M3 |
+| `PerspectiveMeshItem.h/.cpp` (if needed) | QQuickItem-owned dynamic triangle mesh/UV renderer | M2–M3 |
+| `PerspectiveInputAdapter.h/.cpp` (if needed) | Inverse warped hit tests and independently verified Qt Quick event delivery | M4 |
+| `test_projection.js`, `test_guide_construction.js` | Mathematical tests independent of screenshot appearance | M1 |
+| `test_surface_alignment.js`, input automation tests | Same-projection surface alignment and interaction semantics | M2–M4 |
+
+Qt notes:
+- `ShaderEffectSource` uses `sourceItem` and `hideSource: true` to texture the **same existing UI tree**, allowing that tree to remain capable of receiving input **at its original coordinates**. It does **not redirect** input to the warped display (Qt official documentation). Do not assume simply overlaying a `MouseArea` and calling a QML `clicked` signal replicates TextField caret/selection/IME.
+- `ShaderEffect` + `GridMesh` are fine for initial regular-grid rendering and the existing prototype. They do **not automatically provide** a CPU-side inverse mapped triangle mesh. To render arbitrary projected per-vertex geometry, choose a verified path: custom scene-graph `QQuickItem::updatePaintNode`/`QSGGeometryNode`, or a documented vertex shader supplied sufficient dynamic vertex data. Avoid inventing a built-in "set each GridMesh vertex" QML API.
+- For M1 overlay guides, Qt Quick `Shape` / `ShapePath` with supported `PathLine` segments can draw sampled projected paths. Do not substitute arbitrary cubic control points for computed guide samples. If the viewport needs high line counts, profile a custom Qt Quick item later.
+- When adding QML or C++ files, explicitly register them in `qt_add_qml_module` / target `SOURCES` / resources as applicable, and retain the existing shader compilation via `qt_add_shaders`. The current executable's output name is `PerspectiveNVPApp`.
+
+Qt documentation:
+- https://doc.qt.io/qt-6/qml-qtquick-shadereffectsource.html
+- https://doc.qt.io/qt-6/qml-qtquick-shadereffect.html
+- https://doc.qt.io/qt-6/qml-qtquick-shapes-shape.html
+- https://doc.qt.io/qt-6/qquickitem.html
+
+### B6. Live UI texture and material mapping: actual implementation sequence
+
+**Step 1 — untouched content.** Keep children of `PerspectiveSurface` in `sourceContent` and retain a live `ShaderEffectSource`; verify Button and TextField update their texture when hovered/typed. The old mode `transition=0` must remain visually pixel-identical to the original QML content.
+
+**Step 2 — geometry snapshot.** Create a mesh containing at least `[(worldPosition3D, materialUV, patchId), ...]` and triangle indices. Each vertex's screen position comes from `P(S(u,v,t))`. Do not apply an independent quad-corner screen warp after projection. Preserve shared boundary vertices for neighboring sheet patches. Validate orientation, clipping and degeneracy.
+
+**Step 3 — UV sampling.** Assign `(u,v)` from the **unmodified original rectangular QML source content**; adjacent folds use continuous UVs and sample the **one texture**. Document screen-space text quality tradeoffs and texture resolution at high warp.
+
+**Step 4 — draw.** Render the projected mesh in one or more batches as supported by chosen Qt Quick scene-graph backend. If the flat/planar path has special optimization, ensure it returns identical geometry and coordinate mapping for equivalent inputs.
+
+**Step 5 — overlay.** Project the guide families with the **same** `P` and render an overlay above the surface. Show a numeric guide-vs-material-edge residual per subscribed region. When a material edge is not a straight 3D line (for example along a curved sheet), compare with proper local tangent/curve constraints and avoid misleading zero errors.
+
+**Step 6 — live edits.** Editing VP/angle/crease/transition regenerates one snapshot. Smooth animations are allowed, but the final target (`transition=1`) must meet the specified constraints. If a surface is temporarily out of the camera FOV, clip/hide that portion; don't allow NaNs to propagate into the shader.
+
+### B7. Warped QML input: non-negotiable M4 implementation gate
+
+A texture of a real Button **looks** like a Button but has no automatic transformed input target. Events at the original hidden `sourceContent` coordinates must **not** be confused with events on the projected location.
+
+**Point mapping algorithm**:
+1. Convert pointer position from window/scene coordinates to the projected mesh's screen coordinate system.
+2. Find the topmost *visible* projected triangle containing the point (respect clipping, stacking and chosen front/back rules).
+3. Compute barycentric weights `(b0,b1,b2)` on its 2D projected triangle and convert to material UV. If the shader uses perspective-correct UV interpolation, use the mathematically matching corrected interpolation, **not naive linear UV blending**.
+4. Convert `(u,v)` to the source-content coordinate `(u·contentWidth,v·contentHeight)` and identify the intended Qt Quick child/control.
+5. Deliver press/move/release/hover/wheel/touch through a **tested** Qt Quick event-routing architecture preserving pointer identity, mouse/touch grabs, modifier state, event ordering, double click, focus and IME. Document the exact supported path before claiming generic arbitrary-child input works.
+6. Keep a captured pointer associated with the original target while dragging, even if the pointer crosses triangles/patch boundaries; specify behavior if the mesh changes during the gesture.
+7. At `transition=0`, roundtrip pointer mapping must equal ordinary QML coordinates within subpixel tolerance.
+
+**Important limitation:** `QQuickItem::mapFromItem`, `mapToItem` and `childAt` are not themselves a full solution for shader-warped Qt Quick hit testing. A `QQuickItem` event filter may observe events already routed to Qt child items, but does not automatically retarget events to a child whose onscreen image moved. Evaluate a proper pointer event adapter with public Qt APIs and prove it against a **real Button and real TextField**; if a generic event route cannot be safely implemented, explicitly mark interactive support as incomplete rather than silently proxying signal callbacks.
+
+**Required interaction tests**:
+- Click **only** inside displayed warped Button → exactly one `onClicked`, no duplicate original-position clicks.
+- Click original unwarped position (now empty) → Button **must not** click.
+- Hover enter/exit works along actual projected boundary.
+- Press, drag outside, return and release maintain correct ownership/grab.
+- TextField activation at its **displayed** location; caret placement, selection, typing, Backspace, keyboard focus, tab navigation, IME.
+- Test transformed controls at `t=0,0.5,1` and with VP repositioning, folded patches and partial FOV clipping.
+- Ensure editor VP handles take precedence over surface input only when edit mode is on.
+- Tests for overlapping triangles/occlusion and inverted/noninvertible geometry report errors, rather than sending events to a random control.
+
+### B8. Workbench implementation acceptance, staged
+
+**UI-M1 (with math M1):**
+- [ ] `Main.qml` opens `PerspectiveWorkbench.qml` by default; `SurfaceDemo.qml` and `LegacyDemo.qml` remain reachable for regression.
+- [ ] Projection selector, 1–6/N preset selector, family/partner inspector and visible/hidden/∞ metadata.
+- [ ] Draggable VP markers derived from projection; guides redraw from projected 3D lines; guide visibility toggle.
+- [ ] Basic finite/true∞/effective∞ diagnostics with radian/physical-pixel readouts.
+- [ ] A static or existing live QML sheet is shown for illustration; **do not claim** it is perspective-aligned unless solver/renderer M2 is connected.
+- [ ] Screenshots + numeric tests: preset changes, marker drag, pair partner update, FOV clipping, infinite VP arrows.
+- **STOP and review before M2.**
+
+**UI-M2–M3 (actual surface):**
+- [ ] `PerspectiveSurface` binds to scene snapshot; source `Button`/`TextField` deformed by same projection as guides.
+- [ ] Select region subscriptions and inspect guide alignment residuals.
+- [ ] Controls for anchor, pose, crease location/fold angle, smooth curvature, transition.
+- [ ] Source grid, projected guides and material geometry overlay can be toggled independently.
+- [ ] Disabled/invalid configurations show specific diagnostics and do not silently render a fallback geometry as a pass.
+
+**UI-M4 (interaction):**
+- [ ] Warped Button clicks at warped position and TextField supports actual text input/selection, not an artificial substitute.
+- [ ] Every control reports `inputMappingReady` correctly; no misleading "interactive" label until tests pass.
+
+**UI-M5 (quality):**
+- [ ] GPU/CPU/performance measurement and quality profiles, including DPI-aware effective∞ thresholds and texture sharpness.
+
+**End-to-end example:** 5-point fisheye front disk → move a visible family direction handle → its partner indicator and projected guide curves update → the live QML sheet realigns (once M2 is implemented) → button remains genuinely clickable at its newly projected screen position (after M4). All calculations use **one** projection snapshot. A visually warped sheet before M4 is marked *visual-only*.
+
+### B9. Immediate Codex instructions (replaces ambiguous "add a demo overlay")
+
+Do **M0 + M1 + UI-M1 first**, not all UI phases at once. Deliver a working Qt Quick workbench with the selected projection, real VP pairs and projected guide curves, not a mock-up. State explicitly that `SurfaceGeometry.js` corner/crease has NOT yet been connected to VP construction, and that transformed input is NOT yet supported.
+
+After M1 is accepted, execute M2→M3→M4 in that order, with tests at every gate. Do not mark "V2 UI complete" until the real Qt Quick controls are both visually aligned and interactive at their displayed locations.
