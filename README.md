@@ -1,3 +1,4 @@
+# STILL IN PROTOTYPE
 # Perspective Surface (Qt 6.5+)
 
 One zero-thickness QML control sheet, with a separate legacy planar N-VP demo.
