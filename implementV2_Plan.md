@@ -318,3 +318,68 @@ For each projected mesh triangle, inverse-hit testing must identify its triangle
 - 4/5/6-point drawing labels are **named illustration conventions**, not universal definitions of projection; note the selected projection beside every sample.
 
 **Acceptance principle:** The rendered object and its guide system must be produced by one coherent geometrical model. VPs are not decorative markers, pairing is not an arbitrary link, and corner/crease distortion must follow defined surface constraints rather than a guessed warp.
+
+
+## Appendix A — Infinite vanishing points: **mandatory M1 implementation contract**
+
+An infinite VP is an ordinary **projective point at infinity**, NOT a made-up 2D coordinate such as `(1e9,1e9)`, and NOT the same as the invisible antipodal partner in a 180° fisheye view.
+
+### A1. Representation and classification
+
+Use an image-space homogeneous VP `v_h=(v_x,v_y,w)`, with `v_h ~ α v_h` for every `α≠0`. Compute from camera direction using `v_h = K R d`.
+
+- **Finite:** `|w|>epsilon`, canonical pixel location `(v_x/w,v_y/w)`.
+- **Infinite:** `|w|≤epsilon` for **normalized camera direction** near parallel to the image plane; store the 2D direction `normalize(v_x,v_y)` and `w=0`.
+- **Out of viewport:** finite, but pixel location lies outside the rectangle. **Do not** relabel an out-of-viewport finite VP as infinity.
+- **Antipodal partner:** on the sphere `-d`; in a rectilinear homogeneous image, `K R (-d)=-(K R d)`, i.e. **the same projective VP**. In a front-fisheye image, `-d` may be *behind the camera* and not visible. This is **not** an infinite VP.
+- **Direction nearly parallel:** mathematically finite `w≠0` can map to a very distant location. Preserve its homogeneous value; distinguish a numerical "near-infinity" diagnostic from the exact mathematical case. Never use arbitrary screen-distance thresholds as a semantic definition.
+
+Suggested discriminated result contract (pure mathematical module):
+
+~~~ts
+type ProjectedVP =
+  | { kind: "finite"; homogeneous: [number,number,number];
+      positionPx: [number,number]; visibleInViewport: boolean }
+  | { kind: "infinite"; homogeneous: [number,number,0];
+      directionPx: [number,number] }
+  | { kind: "invalid"; reason: string };
+
+// Optional orthogonal metadata: partnerDirection3D: -d,
+// partnerVisibleInFOV: boolean (only for angular projections)
+~~~
+
+This is a **proposed TypeScript-style data contract**, not a built-in Qt API. Store original normalized `d` separately from a projected VP so changing FOV/projection does not corrupt geometry.
+
+### A2. Guide-line construction without giant coordinates
+
+Given an image point `p=(p_x,p_y,1)` and an image-space homogeneous VP `v=(v_x,v_y,w)`, compute the 2D homogeneous line
+
+$$
+\ell=p\times v.
+$$
+
+- If `w≠0`, the guide line passes through `p` and the finite VP `(v_x/w,v_y/w)`.
+- If `w=0`, `\ell=(-v_y,v_x,p_xv_y-p_yv_x)`: a line **through p parallel to screen direction `(v_x,v_y)`**. Multiple such guide lines remain parallel.
+- Clip these **infinite mathematical lines** to the viewport for drawing; do not render an "infinite VP marker" at a fake finite position. An edge arrow and label such as "VP∞ ↗" can describe the guide direction without implying a marker location.
+- In all cases, constructing the guide from a **3D line and projecting it** should be the canonical reference used for numerical tests.
+
+### A3. Solver behavior and transition
+
+- The planar solver may accept an infinite-VP constraint: the associated edge family is **parallel in screen space**, not rejected for "missing point".
+- Do not divide by `w` when `w≈0`; preserve homogeneous equations throughout as long as possible. Normalize direction vectors before epsilon checks; use tolerances in well-defined units.
+- Planar line-family VP constraints still must be mutually consistent with **one homography**; a scene-wide collection of directions does **not** have to share one vanishing line.
+- A 2-point box example has two finite horizontal families and a vertical **infinite** family. Tilting the view makes the vertical vanishing point finite in a 3-point box. This is **not** "the missing antipodal partner".
+- During animated camera tilt, pass through near-infinity by recomputing guides from projected directions or homogeneous representations, rather than interpolating a pair of huge screen X/Y numbers. Keep rendered material finite via proper camera clipping.
+- For fisheye/spherical projection, use unit direction on the sphere and FOV visibility; no projective infinity is required for its angular-coordinate VP markers.
+
+### A4. New M1 acceptance tests
+
+1. `K=diag(600,600,1)`, `R=I`, `d=(0,1,0)` -> `v_h=(0,600,0)` -> infinite screen-vertical VP; projected line guides are parallel vertical lines.
+2. `d=(1,0,0)` and `-d=(-1,0,0)` -> the same **homogeneous projective VP** up to a nonzero scalar; on the sphere they are antipodes.
+3. `d=(0,1,0.01)` normalized -> **finite but far** (not silently classified as infinite); guide lines converge far outside viewport.
+4. `d_z=0` exactly -> never generate NaN, Infinity pixel coordinates, a fake far-away dot or a rejected scene merely because `w=0`.
+5. Draw a 2-point construction with vertical guides parallel; switch to 3-point by tilting the camera and observe vertical-guide convergence.
+6. A finite offscreen VP, an infinite projective VP, and a spherical antipodal partner *behind the viewer* must have three distinct diagnostic labels.
+7. `p×v` guide construction passes through `p` for both finite/infinite VPs, and infinite line direction matches `(v_x,v_y)` within tolerance.
+
+**M1 is not complete unless these tests pass along with the projection, pairing and guide-curve tests in Section 7.**
