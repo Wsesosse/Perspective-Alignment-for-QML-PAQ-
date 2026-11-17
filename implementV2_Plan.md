@@ -383,3 +383,87 @@ $$
 7. `p×v` guide construction passes through `p` for both finite/infinite VPs, and infinite line direction matches `(v_x,v_y)` within tolerance.
 
 **M1 is not complete unless these tests pass along with the projection, pairing and guide-curve tests in Section 7.**
+
+
+### A5. Effective infinity: **angular + screen-space error**, not an offscreen-distance cutoff
+
+Distinguish **exact projective infinity** (`w=0`) from **effective/visually indistinguishable infinity** (`w≠0` but its projected guides are practically parallel over the relevant region). The latter is an **approximation for rendering/LOD**, never an identity change in the underlying projection model. A VP just 10 px beyond the screen edge is **not** automatically infinity; nor is every VP beyond an arbitrary fixed pixel distance.
+
+#### A5.1 Operational criterion for a rectilinear VP family
+
+Given a **specific affected screen-space region** `Ω` and a finite image VP `V`, collect several representative projected **guide lines** for that direction family. At sample anchors `p_i∈Ω`, their unoriented (mod `π`) line directions are
+
+$$
+g_i=\frac{V-p_i}{\|V-p_i\|}.
+$$
+
+Compare each with a common reference line orientation `g_ref` (for example a well-defined central guide) using the **acute unoriented angular difference**
+
+$$
+\delta\theta_i=\arccos\!\left(
+\mathrm{clamp}\left(\left|g_i\cdot g_{\rm ref}\right|,0,1\right)\right).
+$$
+
+For numerical stability, `atan2(|cross(g_i,g_ref)|, |dot(g_i,g_ref)|)` is an equivalent choice. `δθ_i` is in **radians**. Define `θ_max` as maximum angular deviation over actual affected guides/anchors. A stricter pairwise test can use the maximum over all guide pairs instead of a central reference; document which is chosen.
+
+Also project each **actual guide** and its **parallel-line replacement** using the same anchor `p_i`. On sampled relevant visible segments define `e_max` as maximum perpendicular screen-space deviation between them, in **physical display pixels** (or convert a documented logical-pixel budget through DPR). Replacing a finite-VP fan with parallel guides is allowed for rendering **only if BOTH**
+
+$$
+\theta_{\max} \le \theta_{\rm tolerance}
+\quad\text{AND}\quad
+e_{\max}\le e_{\rm tolerancePx}.
+$$
+
+No fixed `distance(V, viewportEdge)` is sufficient: error also depends on the affected UI region's spatial spread, guide lengths, projection model and chosen pixel/angular tolerances.
+
+A simple sufficient conservative bound with reference/guide length `L` is `e\lesssim L\,\theta_{\max}` for sufficiently small angular differences, but **measure** the actual samples when possible.
+
+**Concrete symmetric fixture** (rectilinear, distances in screen pixels):
+
+- Local UI region: visible length `g=235 px` in x and two guide anchors separated vertically by `B=70 px`; VP is directly to the right of the midline at `d` pixels beyond the rightmost boundary.
+- The two guide angles differ by
+
+$$
+\Delta\theta=2\arctan\frac{B/2}{g+d}.
+$$
+
+- Their endpoint deviation from horizontal-parallel replacement at the region's right edge is
+
+$$
+e=\frac{(B/2)\,g}{g+d}\ {\rm px}.
+$$
+
+Examples:
+| VP beyond edge (`d`) | Pair-angle (`Δθ`) | Max endpoint deviation (`e`) | Result for proposed `0.1°` and `0.5 px` tolerances |
+|---:|---:|---:|---|
+| 10 px | 16.2602° | 33.5714 px | **NO** |
+| 1,000 px | 3.2467° | 6.6599 px | **NO** |
+| 10,000 px | 0.3919° | 0.8036 px | **NO** |
+| 40,000 px | 0.0997° | 0.2044 px | **YES** for this fixture |
+| 100,000 px | 0.0400° | 0.0821 px | **YES** for this fixture |
+
+For this **specific fixture and pairwise angular criterion**, `d≥(B/2)/tan(θ_tol/2)-g≈39,872 px` for `θ_tol=0.1°`; the pixel tolerance alone requires `d≥(B g)/(2e_tol)-g=16,215 px` for `e_tol=0.5 px`. Thus the combined gate is about 39,872 px **for these dimensions**, NOT a global PAQ distance threshold. `θ_tol` and `e_tol` are design-configurable illustrative values, not empirical perception constants.
+
+#### A5.2 Curvilinear / paired-VP guides
+
+For a projected guide **curve** `G(s)`, do NOT use distance to either endpoint VP as a proxy for visual straightness. Evaluate:
+1. **Tangent-angle variation** `Δθ_tangent` over the **visible material/viewport segment** (radians), and
+2. **Maximum geometric deviation** `e_curve` of that curve from the **best appropriate straight-line approximation** on the same segment (physical pixels), and
+3. **Pairing / visibility** derived from the actual projection `P(d)` and `P(-d)`, not inferred from how straight the visible segment looks.
+
+For a nearly circular visible arc of length `L` and local curvature radius `R_c`, useful small-angle estimates are `Δθ≈L/R_c` and sagitta `e≈L²/(8R_c)`, but for general curves sample/project actual geometry. `R_c` is the **curve radius of curvature**, *not* the screen distance to the partner VP.
+
+If the visible curve segment looks straight, flag `effectiveStraight=true` as a display/perceptual approximation; **do not turn off its true paired-VP metadata or silently replace the projection model**. A visually straight curve can still have opposite endpoints lying offscreen.
+
+#### A5.3 M1 tests and diagnostics to add
+
+1. Fixed `10 px` outside viewport fails effective-infinity test in the symmetric fixture above.
+2. Fixed `40,000 px` beyond that fixture passes proposed `0.1°` + `0.5 px` bounds; changing the material viewport dimensions recomputes status.
+3. Exact `w=0` is labeled `mathematicalInfinity` regardless of perceptual settings.
+4. Finite `w≠0` that passes thresholds is labeled `effectiveInfinity`, **retaining original finite VP** for the solver.
+5. Curvilinear VP partner outside FOV does **not** imply the visible guide curve is straight; tangent/sagitta metrics are evaluated separately.
+6. A render at device-pixel-ratio `DPR=2` applies `e_tolerancePx` in **physical pixels** consistently.
+7. Display `θ_max` in **rad** and degrees, `e_max` in physical px, effective/true infinity flags, region of evaluation and chosen tolerances.
+8. For finite->infinity visual approximation, reference parallel direction must be computed from the same guides; a zero-angle result for one line alone is insufficient.
+
+**Implementation sequencing:** This is part of M1's projection/guide diagnostics. It must be added without weakening the single-plane homography constraints or assigning arbitrary VPs to independent UI vertices.
