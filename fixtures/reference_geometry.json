@@ -1,0 +1,22 @@
+{
+  "name": "rectilinear_two_point_reference",
+  "status": "M1 construction fixture; surface alignment belongs to M2",
+  "camera": {
+    "originWorld": [0, 0, 0],
+    "basis": {"right": [1, 0, 0], "down": [0, 1, 0], "forward": [0, 0, 1]},
+    "projection": "rectilinear",
+    "principalPointPx": [450, 280],
+    "focalPx": [480, 480],
+    "viewportPx": [900, 560],
+    "nearZ": 0.0001
+  },
+  "families": [
+    {"id": "left", "direction3D": [1, 0, 1], "expectedVPPx": [930, 280]},
+    {"id": "right", "direction3D": [-1, 0, 1], "expectedVPPx": [-30, 280]},
+    {"id": "vertical", "direction3D": [0, 1, 0], "expectedVP": "mathematicalInfinityDown"}
+  ],
+  "guideOriginsWorld": [[-1.2, -0.8, 6], [-1.2, 0.8, 6], [1.2, -0.8, 6], [1.2, 0.8, 6]],
+  "illustrativeUnalignedSheetAnchorWorld": [0, 0, 6],
+  "unit": "arbitrary world unit; image unit is logical Qt pixel",
+  "fov": "rectilinear front half-space; viewport clips finite image coordinates"
+}
